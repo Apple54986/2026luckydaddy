@@ -40,7 +40,6 @@
 
     <div class="bg-image"></div>
     
-    <!-- 音效區域 -->
     <audio id="bgMusic" loop preload="auto">
         <source src="https://www.bensound.com/bensound-music/bensound-ukulele.mp3" type="audio/mp3">
     </audio>
@@ -77,7 +76,6 @@
 
         <div class="side-panel">
             <h3>🏆 中獎名單總覽</h3>
-            <!-- 確保這裡有 id="btnDownload" -->
             <button id="btnDownload" class="download-btn" onclick="downloadHistory()">下載名單並同步雲端</button>
             <div id="historyFull" class="history-list"></div>
         </div>
@@ -108,13 +106,12 @@
     </div>
 
     <div id="winnerOverlay" class="winner-overlay">
-        <div id="winnerTitle" class="winner-title">🏆 恭喜中獎！</div>
+        <div id="winnerTitle" class="winner-title">恭喜中獎！</div>
         <div id="winnerGrid" class="winner-grid"></div>
         <button id="btnCloseWinner" class="big-draw-btn" style="font-size:1.5rem; padding:15px 50px;" onclick="closeWinnerOverlay()">確認並關閉</button>
     </div>
 
     <script>
-        // *** 重要：請在此替換成你部署後的 Google Apps Script 網址 ***
     const CLOUD_API_URL = "https://script.google.com/macros/s/AKfycbx5k-NO2O6mFMUjyur2CCx-Hh3Dfh5RgVu8u6vl8R-lZoeTVo-5ArPaoR_f_Tf5RFUzig/exec";
 
     let allNames = [];
@@ -128,6 +125,27 @@
     const bgMusic = document.getElementById('bgMusic');
     const audioTension = document.getElementById('audioTension');
     const audioCheer = document.getElementById('audioCheer');
+
+    /**
+     * 【核心改進：排除偽隨機性】
+     * 使用 window.crypto.getRandomValues 提供的高強度隨機數
+     * 避免了 Math.random() 在統計上可預測的風險
+     */
+    function getSecureRandom() {
+        const array = new Uint32Array(1);
+        window.crypto.getRandomValues(array);
+        // 將 0 ~ 4294967295 的整數轉換為 0 ~ 1 之間的浮點數
+        return array[0] / (0xffffffff + 1);
+    }
+
+    /**
+     * 從陣列中安全隨機選取一個索引
+     */
+    function getSecureRandomIndex(max) {
+        const array = new Uint32Array(1);
+        window.crypto.getRandomValues(array);
+        return array[0] % max;
+    }
 
     function toggleSound() {
         isSoundEnabled = !isSoundEnabled;
@@ -205,9 +223,13 @@
 
         const runRolling = () => {
             if (Date.now() - startTime < durationMs) {
-                rollingDisplay.innerText = currentPool[Math.floor(Math.random() * currentPool.length)];
+                // 滾動效果也使用加密隨機，確保視覺過程也公平
+                const randomIndex = getSecureRandomIndex(currentPool.length);
+                rollingDisplay.innerText = currentPool[randomIndex];
                 requestAnimationFrame(runRolling);
-            } else { finalizeDraw(selectedPrize, currentPool, prizeIndex); }
+            } else { 
+                finalizeDraw(selectedPrize, currentPool, prizeIndex); 
+            }
         };
         requestAnimationFrame(runRolling);
     }
@@ -215,15 +237,23 @@
     function finalizeDraw(prize, pool, prizeIndex) {
         audioTension.pause();
         if (isSoundEnabled) { audioCheer.currentTime = 0; audioCheer.play().catch(e=>{}); }
+        
         const winners = [];
         const tempPool = [...pool];
+
+        /**
+         * 【嚴謹的選取邏輯】
+         * 每次選取都重新生成加密隨機索引，並從臨時池中移除，確保不會重複中獎
+         */
         for (let i = 0; i < prize.count; i++) {
-            const name = tempPool.splice(Math.floor(Math.random() * tempPool.length), 1)[0];
+            const randomIndex = getSecureRandomIndex(tempPool.length);
+            const name = tempPool.splice(randomIndex, 1)[0];
             winners.push(name);
             const record = { name: name, prize: prize.name, synced: false };
             drawnHistory.push(record);
             updateHistoryPanel(record);
         }
+
         prizeMap.splice(prizeIndex, 1);
         showWinnerOverlay(winners, prize.name);
         isRolling = false;
@@ -243,7 +273,6 @@
         const btn = document.getElementById('btnDownload');
         const eventTitle = document.getElementById('displayEventTitle').innerText;
 
-        // 1. 本地下載 TXT
         let content = `--- ${eventTitle} 中獎名單 ---\r\n\r\n`;
         drawnHistory.forEach((item, i) => { content += `${i + 1}. 【${item.prize}】 ${item.name}\r\n`; });
         const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -251,16 +280,11 @@
         const a = document.createElement('a'); a.href = url; a.download = `中獎名單.txt`; a.click();
         URL.revokeObjectURL(url);
 
-        // 2. 同步到雲端
-        // 修正後的檢查條件：如果網址還是原始範例或是空的，才不執行
-        if (!CLOUD_API_URL || CLOUD_API_URL.includes("YOUR_GAS_URL_HERE")) {
-            console.log("雲端 URL 未設定");
-            return;
-        }
+        if (!CLOUD_API_URL || CLOUD_API_URL.includes("YOUR_GAS_URL_HERE")) return;
 
         const unsyncedData = drawnHistory.filter(item => !item.synced);
         if (unsyncedData.length === 0) {
-            alert("✅ TXT 已下載！\n(雲端名單已是最新，無需重複同步)");
+            alert("✅已下載！");
             return;
         }
 
@@ -268,17 +292,14 @@
         btn.disabled = true;
 
         try {
-            // 使用 fetch 傳送資料
             await fetch(CLOUD_API_URL, {
                 method: 'POST',
-                mode: 'no-cors', // 重要：對應 Google Apps Script
+                mode: 'no-cors',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ title: eventTitle, winners: unsyncedData })
             });
-
-            // 成功後將狀態標記為已同步
             unsyncedData.forEach(item => item.synced = true);
-            alert(`✅ 下載成功！\n雲端已新增 ${unsyncedData.length} 筆新名單。`);
+            alert(`✅ 下載成功！\n雲端已同步 ${unsyncedData.length} 筆新名單。`);
         } catch (error) {
             console.error("同步失敗:", error);
             alert("❌ 同步雲端失敗。");
